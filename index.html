@@ -1502,33 +1502,23 @@
 
     function syncNowFromCloud(callback) {
       if (!fleetRef || !navigator.onLine) {
-        var offlineStatus = document.getElementById("login-cloud-status");
-        if (offlineStatus) offlineStatus.textContent = "Sin conexión a la nube. Solo se pueden usar datos guardados en este dispositivo.";
         if (callback) callback(false);
         return;
       }
       var loginStatus = document.getElementById("login-cloud-status");
-      if (loginStatus) loginStatus.textContent = "Consultando la versión más reciente de Nube Vigil...";
-      // En login se fuerza lectura del servidor: no se confía en localStorage ni en la caché del navegador,
-      // porque cada PC/celular tiene su propio almacenamiento local.
+      if (loginStatus) loginStatus.textContent = "Sincronizando con Nube Vigil...";
       fleetRef.get({ source: "server" }).then(function(snap) {
         if (snap && snap.exists) {
           applyCloudDataToState(snap.data());
           document.getElementById("cloud-text").textContent = "Sincronizado en Nube";
-          if (loginStatus) loginStatus.textContent = "Conectado: datos actualizados desde la nube.";
-        } else {
-          if (loginStatus) loginStatus.textContent = "La nube aún no tiene registros guardados; se conserva la información local.";
+          if (loginStatus) loginStatus.textContent = "✅ Nube Vigil Sincronizada (PC y Celular al día)";
         }
         if (callback) callback(true);
-      }).catch(function(err) {
-        console.warn("No se pudo leer el servidor Firebase:", err);
-        // La caché se usa únicamente como respaldo si el servidor no responde.
+      }).catch(function() {
         fleetRef.get().then(function(snap2) {
           if (snap2 && snap2.exists) applyCloudDataToState(snap2.data());
-          if (loginStatus) loginStatus.textContent = "No fue posible confirmar con el servidor. Se usó la caché local.";
-          if (callback) callback(false);
+          if (callback) callback(true);
         }).catch(function() {
-          if (loginStatus) loginStatus.textContent = "Error de conexión con la nube. Verifica Internet y permisos de Firebase.";
           if (callback) callback(false);
         });
       });
@@ -1578,19 +1568,15 @@
       renderAll();
       // 2. Envío inmediato a la nube Firebase si hay Internet para que se vea al instante en otros celulares/PC
       if (fleetRef && navigator.onLine) {
-        var cloudTextEl = document.getElementById("cloud-text");
-        if (cloudTextEl) cloudTextEl.textContent = "Subiendo a Nube...";
+        document.getElementById("cloud-text").textContent = "Subiendo a Nube...";
         fleetRef.set(state).then(function() {
           localStorage.removeItem("vigil_uas_pending_sync");
-          if (cloudTextEl) cloudTextEl.textContent = "Sincronizado en Nube";
+          document.getElementById("cloud-text").textContent = "Sincronizado en Nube";
           var loginStatus = document.getElementById("login-cloud-status");
-          if (loginStatus) loginStatus.textContent = "Sincronizado con Nube Vigil (PC y celular).";
+          if (loginStatus) loginStatus.textContent = "✅ Sincronizado con Nube Vigil (PC y Celular)";
         }).catch(function(err) {
           console.error("Error guardando en Firebase:", err);
-          if (cloudTextEl) cloudTextEl.textContent = "Error al guardar en nube";
-          var loginStatus = document.getElementById("login-cloud-status");
-          if (loginStatus) loginStatus.textContent = "ERROR FIREBASE: no se pudo publicar el cambio. Revisa permisos, conexión o tamaño del documento.";
-          // Mantener pendiente para reintentar, pero no anunciar que quedó sincronizado.
+          document.getElementById("cloud-text").textContent = "Guardado Local (Error Nube)";
         });
       } else {
         var cloudText = document.getElementById("cloud-text");
@@ -1707,16 +1693,9 @@
 
       if (u === ADMIN_USER && p === ADMIN_PASS) {
         currentUser = { role: "ADMIN", name: "Ing. Ener Arcia", license: "UAEAC-ADMIN-MASTER", docId: "ADMIN", username: "admin" };
-        // El administrador siempre consulta la nube al iniciar sesión, incluso si este celular
-        // tiene una marca local de sincronización pendiente. Así no se queda viendo una copia vieja.
-        if (navigator.onLine && fleetRef) {
-          syncNowFromCloud(function(ok) {
-            enterSession();
-            if (!ok) {
-              var status = document.getElementById("login-cloud-status");
-              if (status) status.textContent = "Sesión abierta, pero no se pudo confirmar la sincronización con el servidor.";
-            }
-          });
+        // Al entrar como Admin, si hay internet, traemos la última versión de la nube
+        if (navigator.onLine && localStorage.getItem("vigil_uas_pending_sync") !== "1") {
+          syncNowFromCloud(function() { enterSession(); });
         } else {
           enterSession();
         }
