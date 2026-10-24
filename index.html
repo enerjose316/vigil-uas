@@ -215,6 +215,9 @@
         <button type="submit" class="w-full py-3 bg-vigil-green font-extrabold rounded-lg text-sm uppercase tracking-wider cursor-pointer shadow-lg">
           <i class="fa-solid fa-right-to-bracket mr-1"></i> Ingresar al Sistema
         </button>
+        <button id="login-sync-button" type="button" onclick="manualLoginSync(this)" class="w-full py-2.5 bg-vigil-dark border border-emerald-500/70 text-emerald-300 font-bold rounded-lg text-xs uppercase tracking-wider cursor-pointer hover:bg-slate-800">
+          <i class="fa-solid fa-rotate mr-1"></i> Sincronizar con Nube
+        </button>
       </form>
 
       <div class="border-t border-vigil pt-4 text-center space-y-1">
@@ -870,7 +873,7 @@
             </select>
           </div>
 
-          <div><label class="block text-slate-200 mb-1">Vencimiento Certificado Médico / Curso</label><input id="p-med" type="date" value="2027-12-31" class="w-full bg-vigil-dark border border-vigil rounded p-2 text-white"></div>
+          <div><label class="block text-slate-200 mb-1">Vencimiento Certificado Médico / Curso *</label><input id="p-med" type="date" required class="w-full bg-vigil-dark border border-vigil rounded p-2 text-white"></div>
           <div><label class="block text-emerald-400 font-bold mb-1">Usuario Login *</label><input id="p-user" required placeholder="Ej: tecnico1 / jperez" class="w-full bg-vigil-dark border border-emerald-500/60 rounded p-2 text-white mono"></div>
           <div><label class="block text-emerald-400 font-bold mb-1">Contraseña *</label><input id="p-pass" required placeholder="Ej: vigil123" class="w-full bg-vigil-dark border border-emerald-500/60 rounded p-2 text-white mono"></div>
           <div class="flex items-end"><button type="submit" class="w-full py-2.5 bg-vigil-green font-extrabold rounded-lg cursor-pointer shadow">+ Crear Usuario Autorizado</button></div>
@@ -1218,7 +1221,7 @@
 
     // Botón táctil "HOY" junto a cada fecha: evita tener que escribirla desde el celular.
     function addTodayButtons() {
-      var dateIds = ["pb-date", "f-date", "m-date", "m-date-end", "sh-date", "p-med", "d-exp"];
+      var dateIds = ["pb-date", "f-date", "m-date", "m-date-end", "sh-date"];
       dateIds.forEach(function(id) {
         var input = document.getElementById(id);
         if (!input || input.dataset.todayButtonAdded === "1") return;
@@ -1500,25 +1503,53 @@
       renderAll();
     }
 
+    // Sincronización manual disponible desde la pantalla de inicio, especialmente útil en móviles.
+    function manualLoginSync(button) {
+      var btn = button || document.getElementById("login-sync-button");
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Sincronizando...'; }
+      var errEl = document.getElementById("login-error");
+      if (errEl) errEl.classList.add("hidden");
+      syncNowFromCloud(function(ok) {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-rotate mr-1"></i> Sincronizar con Nube';
+        }
+        var status = document.getElementById("login-cloud-status");
+        if (status && ok) status.textContent = "✅ Sincronización finalizada: datos consultados en Nube Vigil.";
+        else if (status) status.textContent = "⚠️ No se pudo confirmar la sincronización con el servidor. Revisa Internet y permisos de Firebase.";
+      });
+    }
+
     function syncNowFromCloud(callback) {
       if (!fleetRef || !navigator.onLine) {
+        var offlineStatus = document.getElementById("login-cloud-status");
+        if (offlineStatus) offlineStatus.textContent = "Sin conexión a la nube. Solo se pueden usar datos guardados en este dispositivo.";
         if (callback) callback(false);
         return;
       }
       var loginStatus = document.getElementById("login-cloud-status");
-      if (loginStatus) loginStatus.textContent = "Sincronizando con Nube Vigil...";
+      if (loginStatus) loginStatus.textContent = "Consultando la versión más reciente de Nube Vigil...";
+      // En login se fuerza lectura del servidor: no se confía en localStorage ni en la caché del navegador,
+      // porque cada PC/celular tiene su propio almacenamiento local.
       fleetRef.get({ source: "server" }).then(function(snap) {
         if (snap && snap.exists) {
           applyCloudDataToState(snap.data());
-          document.getElementById("cloud-text").textContent = "Sincronizado en Nube";
-          if (loginStatus) loginStatus.textContent = "✅ Nube Vigil Sincronizada (PC y Celular al día)";
+          var cloudTextEl = document.getElementById("cloud-text");
+          if (cloudTextEl) cloudTextEl.textContent = "Sincronizado en Nube";
+          if (loginStatus) loginStatus.textContent = "Conectado: datos actualizados desde la nube.";
+        } else {
+          if (loginStatus) loginStatus.textContent = "La nube aún no tiene registros guardados; se conserva la información local.";
         }
         if (callback) callback(true);
-      }).catch(function() {
+      }).catch(function(err) {
+        console.warn("No se pudo leer el servidor Firebase:", err);
+        // La caché se usa únicamente como respaldo si el servidor no responde.
         fleetRef.get().then(function(snap2) {
           if (snap2 && snap2.exists) applyCloudDataToState(snap2.data());
-          if (callback) callback(true);
+          if (loginStatus) loginStatus.textContent = "No fue posible confirmar con el servidor. Se usó la caché local.";
+          if (callback) callback(false);
         }).catch(function() {
+          if (loginStatus) loginStatus.textContent = "Error de conexión con la nube. Verifica Internet y permisos de Firebase.";
           if (callback) callback(false);
         });
       });
@@ -1537,17 +1568,21 @@
         if (!firebase.apps.length) firebase.initializeApp(cfg);
         // Usamos el documento autorizado en las reglas de Firebase ("vigil_colombia_data") para que PC y Celular sincronicen sin bloqueo de permisos
         fleetRef = firebase.firestore().collection("aerolog_system").doc("vigil_colombia_data");
-        // Forzar lectura directa del servidor al abrir la app para que el celular siempre descargue los usuarios creados en el PC
-        syncNowFromCloud();
-        fleetRef.onSnapshot(function(snap) {
+        fleetRef.onSnapshot({ includeMetadataChanges: true }, function(snap) {
           if (snap && snap.exists) {
+            // Si hay cambios locales pendientes por falta de internet, no los sobreescribimos con caché vieja
+            if (localStorage.getItem("vigil_uas_pending_sync") === "1" && snap.metadata && snap.metadata.fromCache) {
+              return;
+            }
             applyCloudDataToState(snap.data());
             document.getElementById("cloud-text").textContent = "Nube Vigil Activa";
             document.getElementById("login-cloud-status").textContent = "✅ Conectado en Tiempo Real a Nube Vigil (PC y Celular)";
+          } else {
+            saveAll();
           }
         }, function(err) {
           console.warn("Aviso Firebase:", err);
-          document.getElementById("login-cloud-status").textContent = "⚠️ Nube bloqueada por Reglas de Firestore (Entra a Firebase Console y pon allow read, write: if true;)";
+          document.getElementById("login-cloud-status").textContent = "Modo Local Activo (Sin conexión a nube)";
         });
       }
     } catch (e) {}
@@ -1564,15 +1599,19 @@
       renderAll();
       // 2. Envío inmediato a la nube Firebase si hay Internet para que se vea al instante en otros celulares/PC
       if (fleetRef && navigator.onLine) {
-        document.getElementById("cloud-text").textContent = "Subiendo a Nube...";
+        var cloudTextEl = document.getElementById("cloud-text");
+        if (cloudTextEl) cloudTextEl.textContent = "Subiendo a Nube...";
         fleetRef.set(state).then(function() {
           localStorage.removeItem("vigil_uas_pending_sync");
-          document.getElementById("cloud-text").textContent = "Sincronizado en Nube";
+          if (cloudTextEl) cloudTextEl.textContent = "Sincronizado en Nube";
           var loginStatus = document.getElementById("login-cloud-status");
-          if (loginStatus) loginStatus.textContent = "✅ Sincronizado con Nube Vigil (PC y Celular)";
+          if (loginStatus) loginStatus.textContent = "Sincronizado con Nube Vigil (PC y celular).";
         }).catch(function(err) {
           console.error("Error guardando en Firebase:", err);
-          document.getElementById("cloud-text").textContent = "Guardado Local (Error Nube)";
+          if (cloudTextEl) cloudTextEl.textContent = "Error al guardar en nube";
+          var loginStatus = document.getElementById("login-cloud-status");
+          if (loginStatus) loginStatus.textContent = "ERROR FIREBASE: no se pudo publicar el cambio. Revisa permisos, conexión o tamaño del documento.";
+          // Mantener pendiente para reintentar, pero no anunciar que quedó sincronizado.
         });
       } else {
         var cloudText = document.getElementById("cloud-text");
@@ -1689,30 +1728,40 @@
 
       if (u === ADMIN_USER && p === ADMIN_PASS) {
         currentUser = { role: "ADMIN", name: "Ing. Ener Arcia", license: "UAEAC-ADMIN-MASTER", docId: "ADMIN", username: "admin" };
-        if (navigator.onLine) {
-          syncNowFromCloud(function() { enterSession(); });
+        // El administrador siempre consulta la nube al iniciar sesión, incluso si este celular
+        // tiene una marca local de sincronización pendiente. Así no se queda viendo una copia vieja.
+        if (navigator.onLine && fleetRef) {
+          syncNowFromCloud(function(ok) {
+            enterSession();
+            if (!ok) {
+              var status = document.getElementById("login-cloud-status");
+              if (status) status.textContent = "Sesión abierta, pero no se pudo confirmar la sincronización con el servidor.";
+            }
+          });
         } else {
           enterSession();
         }
         return;
       }
 
-      // Siempre que haya internet, forzamos una consulta fresca al servidor de Firebase antes de validar para que el celular siempre tenga el piloto creado en el PC
+      // 1. Intentar con los datos actuales en memoria
+      if (tryMatchPilotLogin(u, p)) return;
+
+      // 2. Si no aparece (porque fue creado hace pocos segundos desde el PC), consultar la nube en tiempo real antes de rechazar
       if (fleetRef && navigator.onLine) {
         var loginStatus = document.getElementById("login-cloud-status");
-        if (loginStatus) loginStatus.textContent = "Sincronizando con Nube para verificar usuario...";
-        syncNowFromCloud(function(success) {
-          if (tryMatchPilotLogin(u, p)) {
-            return;
+        if (loginStatus) loginStatus.textContent = "Verificando usuario recién creado en la nube...";
+        syncNowFromCloud(function() {
+          if (!tryMatchPilotLogin(u, p)) {
+            errEl.textContent = "Credenciales inválidas o usuario aún no guardado en la nube.";
+            errEl.classList.remove("hidden");
           }
-          errEl.textContent = "Usuario o contraseña incorrectos. Verifica que el usuario exista y esté bien escrito.";
-          errEl.classList.remove("hidden");
         });
-      } else {
-        if (tryMatchPilotLogin(u, p)) return;
-        errEl.textContent = "Credenciales inválidas o sin conexión a Internet para sincronizar el nuevo usuario.";
-        errEl.classList.remove("hidden");
+        return;
       }
+
+      errEl.textContent = "Credenciales inválidas. Verifica con el Ing. Ener Arcia (o conecta a Internet si el usuario es nuevo).";
+      errEl.classList.remove("hidden");
     }
 
     function enterSession() {
@@ -2511,19 +2560,8 @@
         profileCompleted: false
       });
       e.target.reset();
-      var medInput = document.getElementById("p-med");
-      if (medInput) medInput.value = "2027-12-31";
       saveAll();
-      if (fleetRef && navigator.onLine) {
-        fleetRef.set(state).then(function() {
-          localStorage.removeItem("vigil_uas_pending_sync");
-          alert("✅ Usuario '" + newUsername + "' creado y sincronizado en la Nube. Ya puede ingresar desde el celular.");
-        }).catch(function(err) {
-          alert("⚠️ Usuario guardado en este PC, pero hubo un error subiendo a la nube: " + err.message);
-        });
-      } else {
-        alert("Usuario creado en modo local (conecta a Internet para que se sincronice con los celulares).");
-      }
+      alert("Usuario creado exitosamente en el sistema.");
     }
 
     function removePilotUser(idx) {
