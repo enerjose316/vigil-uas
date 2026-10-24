@@ -1567,13 +1567,15 @@
         };
         if (!firebase.apps.length) firebase.initializeApp(cfg);
         // Usamos el documento autorizado en las reglas de Firebase ("vigil_colombia_data") para que PC y Celular sincronicen sin bloqueo de permisos
-        var dbInstance = firebase.firestore();
-if (dbInstance._delegate && dbInstance._delegate._databaseId) {
-  dbInstance._delegate._databaseId.database = "default";
-} else if (dbInstance._databaseId) {
-  dbInstance._databaseId.database = "default";
-}
-fleetRef = dbInstance.collection("aerolog_system").doc("vigil_colombia_data");
+        try {
+          fleetRef = firebase.firestore().collection("aerolog_system").doc("vigil_colombia_data");
+        } catch(e) {
+          try {
+            fleetRef = firebase.app().firestore().collection("aerolog_system").doc("vigil_colombia_data");
+          } catch(err) {
+            fleetRef = firebase.firestore(firebase.apps[0], "default").collection("aerolog_system").doc("vigil_colombia_data");
+          }
+        }
         fleetRef.onSnapshot({ includeMetadataChanges: true }, function(snap) {
           if (snap && snap.exists) {
             // Si hay cambios locales pendientes por falta de internet, no los sobreescribimos con caché vieja
