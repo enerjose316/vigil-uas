@@ -199,7 +199,7 @@
           <label class="block text-slate-200 font-bold uppercase mb-1">Usuario Autorizado</label>
           <div class="relative">
             <i class="fa-solid fa-user-check absolute left-3.5 top-3 text-vigil-green"></i>
-            <input id="login-user" required placeholder="Ingresa tu usuario autorizado" class="w-full bg-vigil-dark border border-vigil rounded-lg pl-9 pr-3 py-2.5 text-white text-sm focus:border-emerald-500 outline-none">
+            <input id="login-user" required autocapitalize="none" autocorrect="off" placeholder="Ingresa tu usuario autorizado" class="w-full bg-vigil-dark border border-vigil rounded-lg pl-9 pr-3 py-2.5 text-white text-sm focus:border-emerald-500 outline-none">
           </div>
         </div>
         <div>
@@ -870,7 +870,7 @@
             </select>
           </div>
 
-          <div><label class="block text-slate-200 mb-1">Vencimiento Certificado Médico / Curso *</label><input id="p-med" type="date" required class="w-full bg-vigil-dark border border-vigil rounded p-2 text-white"></div>
+          <div><label class="block text-slate-200 mb-1">Vencimiento Certificado Médico / Curso</label><input id="p-med" type="date" value="2027-12-31" class="w-full bg-vigil-dark border border-vigil rounded p-2 text-white"></div>
           <div><label class="block text-emerald-400 font-bold mb-1">Usuario Login *</label><input id="p-user" required placeholder="Ej: tecnico1 / jperez" class="w-full bg-vigil-dark border border-emerald-500/60 rounded p-2 text-white mono"></div>
           <div><label class="block text-emerald-400 font-bold mb-1">Contraseña *</label><input id="p-pass" required placeholder="Ej: vigil123" class="w-full bg-vigil-dark border border-emerald-500/60 rounded p-2 text-white mono"></div>
           <div class="flex items-end"><button type="submit" class="w-full py-2.5 bg-vigil-green font-extrabold rounded-lg cursor-pointer shadow">+ Crear Usuario Autorizado</button></div>
@@ -1218,7 +1218,7 @@
 
     // Botón táctil "HOY" junto a cada fecha: evita tener que escribirla desde el celular.
     function addTodayButtons() {
-      var dateIds = ["pb-date", "f-date", "m-date", "m-date-end", "sh-date"];
+      var dateIds = ["pb-date", "f-date", "m-date", "m-date-end", "sh-date", "p-med", "d-exp"];
       dateIds.forEach(function(id) {
         var input = document.getElementById(id);
         if (!input || input.dataset.todayButtonAdded === "1") return;
@@ -1537,17 +1537,13 @@
         if (!firebase.apps.length) firebase.initializeApp(cfg);
         // Usamos el documento autorizado en las reglas de Firebase ("vigil_colombia_data") para que PC y Celular sincronicen sin bloqueo de permisos
         fleetRef = firebase.firestore().collection("aerolog_system").doc("vigil_colombia_data");
-        fleetRef.onSnapshot({ includeMetadataChanges: true }, function(snap) {
+        // Forzar lectura directa del servidor al abrir la app para que el celular siempre descargue los usuarios creados en el PC
+        syncNowFromCloud();
+        fleetRef.onSnapshot(function(snap) {
           if (snap && snap.exists) {
-            // Si hay cambios locales pendientes por falta de internet, no los sobreescribimos con caché vieja
-            if (localStorage.getItem("vigil_uas_pending_sync") === "1" && snap.metadata && snap.metadata.fromCache) {
-              return;
-            }
             applyCloudDataToState(snap.data());
             document.getElementById("cloud-text").textContent = "Nube Vigil Activa";
             document.getElementById("login-cloud-status").textContent = "✅ Conectado en Tiempo Real a Nube Vigil (PC y Celular)";
-          } else {
-            saveAll();
           }
         }, function(err) {
           console.warn("Aviso Firebase:", err);
@@ -1693,8 +1689,7 @@
 
       if (u === ADMIN_USER && p === ADMIN_PASS) {
         currentUser = { role: "ADMIN", name: "Ing. Ener Arcia", license: "UAEAC-ADMIN-MASTER", docId: "ADMIN", username: "admin" };
-        // Al entrar como Admin, si hay internet, traemos la última versión de la nube
-        if (navigator.onLine && localStorage.getItem("vigil_uas_pending_sync") !== "1") {
+        if (navigator.onLine) {
           syncNowFromCloud(function() { enterSession(); });
         } else {
           enterSession();
@@ -1702,24 +1697,22 @@
         return;
       }
 
-      // 1. Intentar con los datos actuales en memoria
-      if (tryMatchPilotLogin(u, p)) return;
-
-      // 2. Si no aparece (porque fue creado hace pocos segundos desde el PC), consultar la nube en tiempo real antes de rechazar
+      // Siempre que haya internet, forzamos una consulta fresca al servidor de Firebase antes de validar para que el celular siempre tenga el piloto creado en el PC
       if (fleetRef && navigator.onLine) {
         var loginStatus = document.getElementById("login-cloud-status");
-        if (loginStatus) loginStatus.textContent = "Verificando usuario recién creado en la nube...";
-        syncNowFromCloud(function() {
-          if (!tryMatchPilotLogin(u, p)) {
-            errEl.textContent = "Credenciales inválidas o usuario aún no guardado en la nube.";
-            errEl.classList.remove("hidden");
+        if (loginStatus) loginStatus.textContent = "Sincronizando con Nube para verificar usuario...";
+        syncNowFromCloud(function(success) {
+          if (tryMatchPilotLogin(u, p)) {
+            return;
           }
+          errEl.textContent = "Usuario o contraseña incorrectos. Verifica que el usuario exista y esté bien escrito.";
+          errEl.classList.remove("hidden");
         });
-        return;
+      } else {
+        if (tryMatchPilotLogin(u, p)) return;
+        errEl.textContent = "Credenciales inválidas o sin conexión a Internet para sincronizar el nuevo usuario.";
+        errEl.classList.remove("hidden");
       }
-
-      errEl.textContent = "Credenciales inválidas. Verifica con el Ing. Ener Arcia (o conecta a Internet si el usuario es nuevo).";
-      errEl.classList.remove("hidden");
     }
 
     function enterSession() {
@@ -2518,8 +2511,19 @@
         profileCompleted: false
       });
       e.target.reset();
+      var medInput = document.getElementById("p-med");
+      if (medInput) medInput.value = "2027-12-31";
       saveAll();
-      alert("Usuario creado exitosamente en el sistema.");
+      if (fleetRef && navigator.onLine) {
+        fleetRef.set(state).then(function() {
+          localStorage.removeItem("vigil_uas_pending_sync");
+          alert("✅ Usuario '" + newUsername + "' creado y sincronizado en la Nube. Ya puede ingresar desde el celular.");
+        }).catch(function(err) {
+          alert("⚠️ Usuario guardado en este PC, pero hubo un error subiendo a la nube: " + err.message);
+        });
+      } else {
+        alert("Usuario creado en modo local (conecta a Internet para que se sincronice con los celulares).");
+      }
     }
 
     function removePilotUser(idx) {
