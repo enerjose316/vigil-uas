@@ -1567,15 +1567,13 @@
         };
         if (!firebase.apps.length) firebase.initializeApp(cfg);
         // Usamos el documento autorizado en las reglas de Firebase ("vigil_colombia_data") para que PC y Celular sincronicen sin bloqueo de permisos
-        try {
-          fleetRef = firebase.firestore().collection("aerolog_system").doc("vigil_colombia_data");
-        } catch(e) {
-          try {
-            fleetRef = firebase.app().firestore().collection("aerolog_system").doc("vigil_colombia_data");
-          } catch(err) {
-            fleetRef = firebase.firestore(firebase.apps[0], "default").collection("aerolog_system").doc("vigil_colombia_data");
-          }
-        }
+        var dbInstance = firebase.firestore();
+if (dbInstance._delegate && dbInstance._delegate._databaseId) {
+  dbInstance._delegate._databaseId.database = "default";
+} else if (dbInstance._databaseId) {
+  dbInstance._databaseId.database = "default";
+}
+fleetRef = dbInstance.collection("aerolog_system").doc("vigil_colombia_data");
         fleetRef.onSnapshot({ includeMetadataChanges: true }, function(snap) {
           if (snap && snap.exists) {
             // Si hay cambios locales pendientes por falta de internet, no los sobreescribimos con caché vieja
@@ -1736,6 +1734,10 @@
       for (var i = 0; i < pilots.length; i++) {
         var pl = pilots[i];
         if (String(pl.username || "").trim().toLowerCase() === u && String(pl.password || "").trim() === p) {
+          if (pl.status === "BLOQUEADO" || pl.active === false) {
+            alert("Acceso denegado: Este usuario ha sido bloqueado por el Administrador por motivos de trazabilidad RAC 100.");
+            return true;
+          }
           currentUser = {
             role: pl.role || "PILOT",
             name: pl.name,
@@ -2588,7 +2590,8 @@
         password: document.getElementById("p-pass").value.trim(),
         photoB64: "",
         signatureB64: "",
-        profileCompleted: false
+        profileCompleted: false,
+        status: "ACTIVO"
       };
 
       // La lista de usuarios se actualiza transaccionalmente en Firebase. No se sube
@@ -2651,13 +2654,42 @@
       alert("No hay conexión confirmada con Firebase. Conecta el dispositivo a Internet y vuelve a crear el usuario para que quede disponible en el PC y los celulares.");
     }
 
-    function removePilotUser(idx) {
+    function toggleUserAccess(idx) {
       if (!currentUser || currentUser.role !== "ADMIN") return;
       var target = (state.pilots || [])[idx];
       if (!target) return;
-      if (!confirm("¿Estás seguro de eliminar definitivamente al usuario '" + target.name + "' (" + target.username + ")?")) return;
-      state.pilots.splice(idx, 1);
-      saveAll();
+      var currentStatus = target.status || "ACTIVO";
+      var newStatus = currentStatus === "ACTIVO" ? "BLOQUEADO" : "ACTIVO";
+      var actionText = newStatus === "BLOQUEADO" ? "bloquear el acceso a" : "restaurar el acceso a";
+      if (!confirm("¿Estás seguro de " + actionText + " al usuario '" + target.name + "'? (Se mantiene la trazabilidad RAC 100 histórica).")) return;
+      
+      target.status = newStatus;
+      
+      if (fleetRef && navigator.onLine && firebase && firebase.firestore) {
+        var db = firebase.firestore();
+        db.runTransaction(function(transaction) {
+          return transaction.get(fleetRef).then(function(doc) {
+            var cloudData = doc.exists ? (doc.data() || {}) : {};
+            var cloudPilots = Array.isArray(cloudData.pilots) ? cloudData.pilots.slice() : [];
+            for (var i = 0; i < cloudPilots.length; i++) {
+              if (String(cloudPilots[i].username || "").trim().toLowerCase() === String(target.username || "").trim().toLowerCase()) {
+                cloudPilots[i].status = newStatus;
+              }
+            }
+            transaction.set(fleetRef, { pilots: cloudPilots }, { merge: true });
+            return cloudPilots;
+          });
+        }).then(function() {
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (ignore) {}
+          renderAll();
+          alert("✅ Estado del usuario actualizado correctamente en la Nube.");
+        }).catch(function(err) {
+          alert("⚠️ Error actualizando estado en la nube: " + err.message);
+        });
+      } else {
+        saveAll();
+        alert("Estado actualizado localmente.");
+      }
     }
 
     function openHojaVida(id) {
@@ -2858,15 +2890,23 @@
           ? '<img src="' + pl.signatureB64 + '" class="h-7 bg-white p-0.5 rounded object-contain">'
           : '<span class="text-[10px] text-slate-500">Pendiente</span>';
 
+        var userStatus = pl.status || "ACTIVO";
+        var statusBadge = userStatus === "ACTIVO" 
+          ? '<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold text-[10px] block mb-1">ACCESO ACTIVO</span>' 
+          : '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[10px] block mb-1">BLOQUEADO</span>';
+        
+        var toggleBtnClass = userStatus === "ACTIVO" ? "bg-amber-600 hover:bg-amber-500" : "bg-emerald-600 hover:bg-emerald-500";
+        var toggleBtnText = userStatus === "ACTIVO" ? '<i class="fa-solid fa-lock mr-1"></i>Bloquear' : '<i class="fa-solid fa-lock-open mr-1"></i>Activar';
+
         pHtml += '<tr class="border-b border-vigil/60 hover:bg-vigil-dark/40">' +
           '<td class="p-3">' + thumbPhoto + '</td>' +
           '<td class="p-3 font-bold text-white">' + pl.name + '</td>' +
-          '<td class="p-3">' + rBadge + '</td>' +
+          '<td class="p-3">' + rBadge + '<div class="mt-1">' + statusBadge + '</div></td>' +
           '<td class="p-3 mono text-slate-300">' + pl.docId + '</td>' +
           '<td class="p-3">' + thumbSig + '</td>' +
           '<td class="p-3 mono text-emerald-400 font-bold">' + pl.username + '</td>' +
           '<td class="p-3 mono text-slate-300">' + pl.password + '</td>' +
-          '<td class="p-3 text-right"><button type="button" onclick="removePilotUser(' + pIdx + ')" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-xs cursor-pointer shadow"><i class="fa-solid fa-trash-can mr-1"></i>Eliminar</button></td>' +
+          '<td class="p-3 text-right"><button type="button" onclick="toggleUserAccess(' + pIdx + ')" class="px-3 py-1.5 ' + toggleBtnClass + ' text-white font-bold rounded text-xs cursor-pointer shadow">' + toggleBtnText + '</button></td>' +
         '</tr>';
       }
       document.getElementById("pilots-tbody").innerHTML = pHtml || '<tr><td colspan="8" class="p-4 text-center text-slate-400">No hay usuarios creados todavía.</td></tr>';
