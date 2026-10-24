@@ -1587,6 +1587,31 @@
       }
     } catch (e) {}
 
+    // Publica el estado local usando una transacción y conserva los usuarios que ya existan
+    // en la nube. Esto evita que un PC/celular con una copia antigua borre usuarios nuevos.
+    function publishStatePreservingCloudUsers() {
+      if (!fleetRef || !navigator.onLine || !firebase || !firebase.firestore) return Promise.reject(new Error("OFFLINE_OR_FIREBASE_UNAVAILABLE"));
+      var localSnapshot = JSON.parse(JSON.stringify(state));
+      return firebase.firestore().runTransaction(function(transaction) {
+        return transaction.get(fleetRef).then(function(doc) {
+          var remote = doc.exists ? (doc.data() || {}) : {};
+          var remotePilots = Array.isArray(remote.pilots) ? remote.pilots.slice() : [];
+          var seen = {};
+          remotePilots.forEach(function(pl) {
+            var key = String(pl.username || "").trim().toLowerCase();
+            if (key) seen[key] = true;
+          });
+          (Array.isArray(localSnapshot.pilots) ? localSnapshot.pilots : []).forEach(function(pl) {
+            var key = String(pl.username || "").trim().toLowerCase();
+            if (key && !seen[key]) { remotePilots.push(pl); seen[key] = true; }
+          });
+          var nextState = Object.assign({}, remote, localSnapshot, { pilots: remotePilots });
+          transaction.set(fleetRef, nextState);
+          return nextState;
+        });
+      });
+    }
+
     function saveAll() {
       // 1. Guardado local inmediato en el dispositivo (funciona sin Internet)
       try {
@@ -1601,7 +1626,7 @@
       if (fleetRef && navigator.onLine) {
         var cloudTextEl = document.getElementById("cloud-text");
         if (cloudTextEl) cloudTextEl.textContent = "Subiendo a Nube...";
-        fleetRef.set(state).then(function() {
+        publishStatePreservingCloudUsers().then(function() {
           localStorage.removeItem("vigil_uas_pending_sync");
           if (cloudTextEl) cloudTextEl.textContent = "Sincronizado en Nube";
           var loginStatus = document.getElementById("login-cloud-status");
@@ -1623,9 +1648,10 @@
     window.addEventListener("online", function() {
       if (!fleetRef) return;
       if (localStorage.getItem("vigil_uas_pending_sync") === "1") {
-        fleetRef.set(state).then(function() {
+        publishStatePreservingCloudUsers().then(function() {
           localStorage.removeItem("vigil_uas_pending_sync");
-          document.getElementById("cloud-text").textContent = "Sincronizado en Nube";
+          var cloudTextEl = document.getElementById("cloud-text");
+          if (cloudTextEl) cloudTextEl.textContent = "Sincronizado en Nube";
         }).catch(function() {
           document.getElementById("cloud-text").textContent = "Pendiente de sincronización";
         });
@@ -2535,15 +2561,12 @@
       e.preventDefault();
       if (!currentUser || currentUser.role !== "ADMIN") return;
       var newUsername = document.getElementById("p-user").value.trim().toLowerCase();
+      if (!newUsername) return alert("Ingresa un nombre de usuario.");
       if (newUsername === ADMIN_USER) {
         return alert("El usuario 'admin' está reservado exclusivamente para el Administrador.");
       }
-      for (var i = 0; i < (state.pilots || []).length; i++) {
-        if (String(state.pilots[i].username).toLowerCase() === newUsername) {
-          return alert("Ese nombre de usuario ya existe en el sistema.");
-        }
-      }
-      state.pilots.push({
+
+      var newPilot = {
         name: document.getElementById("p-name").value.trim(),
         docId: document.getElementById("p-doc").value.trim(),
         role: document.getElementById("p-role").value,
@@ -2558,10 +2581,66 @@
         photoB64: "",
         signatureB64: "",
         profileCompleted: false
-      });
-      e.target.reset();
-      saveAll();
-      alert("Usuario creado exitosamente en el sistema.");
+      };
+
+      // La lista de usuarios se actualiza transaccionalmente en Firebase. No se sube
+      // el estado local completo, porque cada navegador tiene su propio localStorage
+      // y una copia vieja podría borrar los usuarios creados desde el otro dispositivo.
+      if (fleetRef && navigator.onLine && firebase && firebase.firestore) {
+        var db = firebase.firestore();
+        var createBtn = e.submitter;
+        if (createBtn) createBtn.disabled = true;
+        var cloudStatus = document.getElementById("login-cloud-status");
+        if (cloudStatus) cloudStatus.textContent = "Creando usuario compartido en Nube Vigil...";
+
+        db.runTransaction(function(transaction) {
+          return transaction.get(fleetRef).then(function(doc) {
+            var cloudData = doc.exists ? (doc.data() || {}) : {};
+            var cloudPilots = Array.isArray(cloudData.pilots) ? cloudData.pilots.slice() : [];
+            var exists = cloudPilots.some(function(pl) {
+              return String(pl.username || "").trim().toLowerCase() === newUsername;
+            });
+            if (exists) throw new Error("DUPLICATE_USERNAME");
+            cloudPilots.push(newPilot);
+            transaction.set(fleetRef, { pilots: cloudPilots }, { merge: true });
+            return cloudPilots;
+          });
+        }).then(function() {
+          e.target.reset();
+          // Leer el documento completo recién confirmado para actualizar esta pantalla
+          // con los mismos datos que recibirán el PC y los demás celulares.
+          return fleetRef.get({ source: "server" }).then(function(snap) {
+            if (snap && snap.exists) applyCloudDataToState(snap.data());
+            else {
+              state.pilots = (state.pilots || []).filter(function(pl) {
+                return String(pl.username || "").trim().toLowerCase() !== newUsername;
+              });
+              state.pilots.push(newPilot);
+              try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (ignore) {}
+              renderAll();
+            }
+            localStorage.removeItem("vigil_uas_pending_sync");
+            var cloudText = document.getElementById("cloud-text");
+            if (cloudText) cloudText.textContent = "Sincronizado en Nube";
+            if (cloudStatus) cloudStatus.textContent = "Usuario creado y confirmado en Firebase para PC y celulares.";
+            alert("Usuario creado y sincronizado con la nube. Ya puede ingresar desde el PC o cualquier celular conectado.");
+          });
+        }).catch(function(err) {
+          console.error("No se pudo crear el usuario compartido:", err);
+          if (err && err.message === "DUPLICATE_USERNAME") {
+            alert("Ese nombre de usuario ya existe en la nube. Elige otro nombre.");
+          } else {
+            alert("No se pudo confirmar el usuario en Firebase. No se informó como sincronizado. Verifica Internet y permisos de Firestore e inténtalo de nuevo.");
+            if (cloudStatus) cloudStatus.textContent = "ERROR FIREBASE: usuario no confirmado en la nube.";
+          }
+        }).finally(function() {
+          if (createBtn) createBtn.disabled = false;
+        });
+        return;
+      }
+
+      // Sin conexión no se afirma que el usuario esté compartido entre dispositivos.
+      alert("No hay conexión confirmada con Firebase. Conecta el dispositivo a Internet y vuelve a crear el usuario para que quede disponible en el PC y los celulares.");
     }
 
     function removePilotUser(idx) {
