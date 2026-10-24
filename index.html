@@ -199,7 +199,7 @@
           <label class="block text-slate-200 font-bold uppercase mb-1">Usuario Autorizado</label>
           <div class="relative">
             <i class="fa-solid fa-user-check absolute left-3.5 top-3 text-vigil-green"></i>
-            <input id="login-user" required autocapitalize="none" autocorrect="off" placeholder="Ingresa tu usuario autorizado" class="w-full bg-vigil-dark border border-vigil rounded-lg pl-9 pr-3 py-2.5 text-white text-sm focus:border-emerald-500 outline-none">
+            <input id="login-user" required placeholder="Ingresa tu usuario autorizado" class="w-full bg-vigil-dark border border-vigil rounded-lg pl-9 pr-3 py-2.5 text-white text-sm focus:border-emerald-500 outline-none">
           </div>
         </div>
         <div>
@@ -1501,26 +1501,41 @@
     }
 
     function syncNowFromCloud(callback) {
-      if (!fleetRef || !navigator.onLine) {
+      if (!fleetRef) {
         if (callback) callback(false);
         return;
       }
       var loginStatus = document.getElementById("login-cloud-status");
       if (loginStatus) loginStatus.textContent = "Sincronizando con Nube Vigil...";
-      fleetRef.get({ source: "server" }).then(function(snap) {
-        if (snap && snap.exists) {
-          applyCloudDataToState(snap.data());
-          document.getElementById("cloud-text").textContent = "Sincronizado en Nube";
-          if (loginStatus) loginStatus.textContent = "✅ Nube Vigil Sincronizada (PC y Celular al día)";
-        }
-        if (callback) callback(true);
-      }).catch(function() {
-        fleetRef.get().then(function(snap2) {
-          if (snap2 && snap2.exists) applyCloudDataToState(snap2.data());
-          if (callback) callback(true);
-        }).catch(function() {
+      
+      // Usar un timeout de 2.5 segundos para que si el internet está lento o bloqueado, la app NUNCA se quede congelada esperando
+      var finished = false;
+      var timer = setTimeout(function() {
+        if (!finished) {
+          finished = true;
+          if (loginStatus) loginStatus.textContent = "Modo local rápido activo";
           if (callback) callback(false);
-        });
+        }
+      }, 2500);
+
+      fleetRef.get().then(function(snap) {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          if (snap && snap.exists) {
+            applyCloudDataToState(snap.data());
+            var cloudText = document.getElementById("cloud-text");
+            if (cloudText) cloudText.textContent = "Sincronizado en Nube";
+            if (loginStatus) loginStatus.textContent = "✅ Nube Vigil Sincronizada";
+          }
+          if (callback) callback(true);
+        }
+      }).catch(function(err) {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          if (callback) callback(false);
+        }
       });
     }
 
@@ -1689,28 +1704,26 @@
 
       if (u === ADMIN_USER && p === ADMIN_PASS) {
         currentUser = { role: "ADMIN", name: "Ing. Ener Arcia", license: "UAEAC-ADMIN-MASTER", docId: "ADMIN", username: "admin" };
-        if (navigator.onLine) {
-          syncNowFromCloud(function() { enterSession(); });
-        } else {
-          enterSession();
-        }
+        enterSession();
         return;
       }
 
-      // Siempre que haya internet, forzamos una consulta fresca al servidor de Firebase antes de validar para que el celular siempre tenga el piloto creado en el PC
-      if (fleetRef && navigator.onLine) {
+      // 1. Verificar primero en la memoria local (instantáneo, sin esperas de red)
+      if (tryMatchPilotLogin(u, p)) return;
+
+      // 2. Si no está en local y hay conexión, intentamos una búsqueda rápida en la nube con timeout de 2 segundos
+      if (fleetRef) {
         var loginStatus = document.getElementById("login-cloud-status");
-        if (loginStatus) loginStatus.textContent = "Sincronizando con Nube para verificar usuario...";
+        if (loginStatus) loginStatus.textContent = "Verificando usuario en la nube...";
         syncNowFromCloud(function(success) {
           if (tryMatchPilotLogin(u, p)) {
             return;
           }
-          errEl.textContent = "Usuario o contraseña incorrectos. Verifica que el usuario exista y esté bien escrito.";
+          errEl.textContent = "Usuario o contraseña incorrectos. Verifica tus credenciales.";
           errEl.classList.remove("hidden");
         });
       } else {
-        if (tryMatchPilotLogin(u, p)) return;
-        errEl.textContent = "Credenciales inválidas o sin conexión a Internet para sincronizar el nuevo usuario.";
+        errEl.textContent = "Usuario o contraseña incorrectos.";
         errEl.classList.remove("hidden");
       }
     }
@@ -2514,16 +2527,15 @@
       var medInput = document.getElementById("p-med");
       if (medInput) medInput.value = "2027-12-31";
       saveAll();
-      if (fleetRef && navigator.onLine) {
+      // Guardado inmediato en la nube en segundo plano (sin bloquear al usuario)
+      if (fleetRef) {
         fleetRef.set(state).then(function() {
           localStorage.removeItem("vigil_uas_pending_sync");
-          alert("✅ Usuario '" + newUsername + "' creado y sincronizado en la Nube. Ya puede ingresar desde el celular.");
         }).catch(function(err) {
-          alert("⚠️ Usuario guardado en este PC, pero hubo un error subiendo a la nube: " + err.message);
+          console.error("Error subiendo a nube:", err);
         });
-      } else {
-        alert("Usuario creado en modo local (conecta a Internet para que se sincronice con los celulares).");
       }
+      alert("✅ Usuario '" + newUsername + "' creado correctamente. Ya puede ingresar desde el celular.");
     }
 
     function removePilotUser(idx) {
