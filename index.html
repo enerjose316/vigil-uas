@@ -954,6 +954,23 @@
             <i class="fa-solid fa-floppy-disk mr-1"></i> Actualizar Codificación y Versiones en Todos los Formatos
           </button>
         </form>
+
+        <!-- ZONA DE RESTABLECIMIENTO DE FÁBRICA (BORRADO MAESTRO CON CLAVE DE ADMIN) -->
+        <div class="bg-rose-950/40 border-2 border-rose-500/70 p-5 rounded-xl space-y-3 mt-6">
+          <h2 class="text-sm font-extrabold text-rose-400 uppercase tracking-wider">
+            <i class="fa-solid fa-triangle-exclamation mr-1"></i> Borrado Maestro / Restablecer Sistema a Cero (Modo Producción)
+          </h2>
+          <p class="text-xs text-slate-300">
+            Usa este botón cuando termines tus pruebas con pilotos y equipos ficticios. Borrará absolutamente todo (vuelos, mantenimientos, baterías, aeronaves y personal de prueba) para dejar el software virgen. Requiere la contraseña de Administrador.
+          </p>
+          <div class="flex gap-2 max-w-md">
+            <input type="password" id="reset-admin-pass" placeholder="Ingresa contraseña de admin (vigil2026)" class="w-full bg-vigil-dark border border-rose-500/50 rounded p-2 text-white text-xs outline-none">
+            <button type="button" onclick="executeMasterReset()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-extrabold rounded text-xs uppercase cursor-pointer shrink-0 shadow">
+              <i class="fa-solid fa-bomb mr-1"></i> Borrar Todo y Dejar en Ceros
+            </button>
+          </div>
+        </div>
+
       </section>
 
     </main>
@@ -1500,7 +1517,39 @@
       if (isLegacySeed && fleetRef && navigator.onLine) {
         fleetRef.set(state).catch(function() {});
       }
-      renderAll();
+      
+    function executeMasterReset() {
+      var passInput = document.getElementById("reset-admin-pass");
+      if (!passInput || passInput.value.trim() !== ADMIN_PASS) {
+        return alert("Contraseña de Administrador incorrecta. No se puede restablecer el sistema.");
+      }
+      if (!confirm("⚠️ ¡ADVERTENCIA DEFINITIVA! Esto borrará todos los registros, vuelos, aeronaves y personal de prueba creado. ¿Estás 100% seguro de dejar el sistema virgen para producción?")) {
+        return;
+      }
+
+      // 1. Limpiar localStorage
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem("vigil_uas_pending_sync");
+      } catch (e) {}
+
+      // 2. Limpiar Firebase si hay conexión
+      if (fleetRef && navigator.onLine) {
+        var cleanState = JSON.parse(JSON.stringify(seedData));
+        fleetRef.set(cleanState).then(function() {
+          alert("✅ Sistema restablecido a cero tanto localmente como en la nube.");
+          location.reload();
+        }).catch(function(err) {
+          alert("⚠️ Se borró localmente, pero hubo un error en la nube: " + err.message);
+          location.reload();
+        });
+      } else {
+        alert("✅ Sistema restablecido a cero en este dispositivo.");
+        location.reload();
+      }
+    }
+
+    renderAll();
     }
 
     // Sincronización manual disponible desde la pantalla de inicio, especialmente útil en móviles.
